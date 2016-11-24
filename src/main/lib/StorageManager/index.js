@@ -1,7 +1,7 @@
 const sander = require('sander')
 const path = require('path')
 const PouchDB = require('pouchdb')
-const { OrderedMap, Map } = require('immutable')
+const { OrderedMap, Map, Set } = require('immutable')
 const util = require('../util')
 
 const electron = require('electron')
@@ -12,36 +12,38 @@ const storagesPath = path.join(remote.app.getPath('userData'), 'storages')
 let dbs
 
 /**
+ * !!TEST IS NEEDED!!
+ */
+
+/**
  * Initialize db connection
  * If nothing is found, add a new connection
  *
  * @return {OrderedMap} All DB connections
  */
 export function init () {
-  return sander.readdir(storagesPath)
+  let dirNames
+  try {
+    dirNames = sander.readdirSync(storagesPath)
+  } catch (err) {
     // If `storages` doesn't exist, create it.
-    .catch((err) => {
-      if (err.code === 'ENOENT') {
-        return sander.mkdir(storagesPath)
-          .then(() => [])
-      } else throw err
-    })
-    // If `storages/default` doesn't exist, create it.
-    .then(function (dirNames) {
-      if (!dirNames.some((dirName) => dirName === 'notebook')) {
-        return sander.mkdir(storagesPath, 'notebook')
-          .then(() => dirNames.push('notebook'))
-      }
-      return dirNames
-    })
-    .then(function initPouchDBs (dirNames) {
-      dbs = dirNames.reduce(function (map, name) {
-        return map.set(name, new PouchDB(path.join(storagesPath, name)))
-      }, new OrderedMap())
+    if (err.code === 'ENOENT') {
+      dirNames = sander.mkdirSync(storagesPath)
+    } else throw err
+  }
+  // If `storages/notebook` doesn't exist, create it.
+  if (!dirNames.some((dirName) => dirName === 'notebook')) {
+    dirNames.unshift(path.join(storagesPath, 'notebook'))
+  }
 
-      return dbs
-    })
+  dbs = dirNames.reduce(function (map, name) {
+    return map.set(name, new PouchDB(path.join(storagesPath, name)))
+  }, new OrderedMap())
+
+  return dbs
 }
+
+init()
 
 export function list () {
   if (dbs == null) return init()
@@ -70,10 +72,17 @@ export function load (name) {
       let { notes, folders } = data.rows.reduce((sum, row) => {
         if (isNoteId.test(row.id)) {
           let noteId = row.id.substring(NOTE_ID_PREFIX.length)
-          sum.notes.push([noteId, row])
+          sum.notes.push([noteId, new Map({
+            folder: row.doc.folder,
+            titile: row.doc.title,
+            content: row.doc.content,
+            tags: new Set(row.doc.tags)
+          })])
         } else if (isFolderId.test(row.id)) {
           let folderPath = row.id.substring(FOLDER_ID_PREFIX.length)
-          sum.folders.push([folderPath, row])
+          sum.folders.push([folderPath, new Map({
+            notes: new Set()
+          })])
         }
         return sum
       }, {
@@ -83,9 +92,21 @@ export function load (name) {
       let noteMap = new Map(notes)
       let folderMap = new Map(folders)
 
+      noteMap.forEach((note, noteId) => {
+        folderMap = folderMap.updateIn(
+          [note.get('folder'), 'notes'],
+          noteSet => {
+            if (noteSet == null) return new Set([noteId])
+            return noteSet.add(noteId)
+          }
+        )
+      })
+
       // Each repository should have `Notes` folder by default.
-      if (folderMap.get('Notes') == null) {
-        folderMap = folderMap.set('Notes', {})
+      if (!folderMap.has('Notes')) {
+        folderMap = folderMap.set('Notes', new Map({
+          notes: new Set()
+        }))
       }
 
       return new Map([
@@ -145,14 +166,18 @@ export function createNote (name, payload) {
         if (doc == null) return id
         return genNoteId()
       })
+      .catch((err) => {
+        if (err.name === 'not_found') return id
+        throw err
+      })
   }
 
   return genNoteId()
     .then((noteId) => {
       return db
-        .put({}, payload, {
+        .put(Object.assign({}, payload, {
           _id: noteId
-        })
+        }))
     })
 }
 

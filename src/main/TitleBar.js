@@ -1,9 +1,18 @@
-import React from 'react'
+import React, { PropTypes } from 'react'
+import { findDOMNode } from 'react-dom'
 import styled from 'styled-components'
-import { TitleBar as MacTitleBar, Toolbar } from 'react-desktop/macOs'
+import { TitleBar as MacTitleBar } from 'react-desktop/macOs'
+import { TitleBar as WindowsTitleBar } from 'react-desktop/windows'
 import Octicon from 'components/Octicon'
+import _ from 'lodash'
+import StorageManager from './lib/StorageManager'
+import { Map } from 'immutable'
 
 const { remote } = require('electron')
+
+const OSX = global.process.platform === 'darwin'
+const WIN = global.process.platform === 'win32'
+// const LINUX = global.process.platform === 'linux'
 
 const SearchInput = styled.input`
   ${p => p.theme.input}
@@ -23,6 +32,9 @@ const Button = styled.button`
   -webkit-app-region: no-drag;
   -webkit-user-select: none;
   margin: 0 2.5px;
+  &:last-child {
+    margin-left: auto;
+  }
 `
 
 const Seperator = styled.div`
@@ -31,9 +43,31 @@ const Seperator = styled.div`
   height: 26px;
 `
 
-const BordedTitleBar = styled(MacTitleBar)`
-  border-bottom: ${p => p.theme.border};
+const ToolBar = styled.div`
+  height: ${OSX ? 36 : 31}px;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  padding-right: ${OSX ? 0 : 10}px;
 `
+
+const BordedTitleBar = styled(OSX ? MacTitleBar : WindowsTitleBar)`
+  border-bottom: ${p => p.theme.border};
+  ${WIN ? 'flex-direction: row-reverse;' : ''}
+`
+
+const AttributedTitleBar = (props) => {
+  return OSX
+    ? <BordedTitleBar
+      transparent
+      inset
+      {..._.omit(props, ['isMaximized', 'onRestoreDownClick', 'innerRef'])}
+    />
+    : <BordedTitleBar
+      {..._.omit(props, ['isFullscreen', 'onResizeClick', 'innerRef'])}
+    />
+}
 
 const Root = styled.div`
   position: relative;
@@ -60,10 +94,17 @@ class TitleBar extends React.Component {
 
     this.handleMinimizeClick = e => {
       remote.getCurrentWindow().minimize()
+      this.setState({
+        isMaximized: false
+      })
     }
 
     this.handleMaximizeClick = e => {
-      remote.getCurrentWindow().maximize()
+      this.toggleMaximize()
+    }
+
+    this.handleRestoreDownClick = e => {
+      this.toggleMaximize()
     }
 
     this.handleResizeClick = e => {
@@ -76,42 +117,121 @@ class TitleBar extends React.Component {
         isFullscreen: !isFullscreen
       })
     }
+
+    this.handleRootDoubleClick = e => {
+      if (e.target === findDOMNode(this.titlebar) || e.target === findDOMNode(this.toolbar)) {
+        this.toggleMaximize()
+      }
+    }
+
+    this.handleNewButtonClick = e => {
+      this.createNote()
+    }
+  }
+
+  toggleMaximize () {
+    let currentWindow = remote.getCurrentWindow()
+
+    let isMaximized = currentWindow.isMaximized()
+    if (isMaximized) {
+      currentWindow.unmaximize()
+    } else {
+      currentWindow.maximize()
+    }
+
+    this.setState({
+      isMaximized: !isMaximized
+    })
+  }
+
+  createNote () {
+    const { router, store } = this.context
+
+    let storageName = router.params.storageName
+    if (!_.isString(storageName)) {
+      storageName = 'notebook'
+    }
+
+    let folderName = router.params.folderName
+    if (!_.isString(folderName)) {
+      folderName = 'Notes'
+    }
+
+    // TODO: this should be moved to redux saga
+    StorageManager
+      .createNote(storageName, {
+        folder: folderName,
+        title: '',
+        content: '',
+        tags: []
+      })
+      .then((doc) => {
+        store.dispatch({
+          type: 'CREATE_NOTE',
+          payload: {
+            storageName,
+            noteId: doc.id,
+            note: new Map({
+              folder: folderName,
+              title: '',
+              content: '',
+              tags: []
+            })
+          }
+        })
+      })
   }
 
   render () {
     return (
       <Root>
-        <BordedTitleBar
-          inset
+        <AttributedTitleBar
           controls
-          transparent
+          isMaximized={this.state.isMaximized}
           isFullscreen={this.state.isFullscreen}
           onCloseClick={this.handleCloseClick}
           onMinimizeClick={this.handleMinimizeClick}
           onMaximizeClick={this.handleMaximizeClick}
+          onRestoreDownClick={this.handleRestoreDownClick}
           onResizeClick={this.handleResizeClick}
+          onDoubleClick={this.handleRootDoubleClick}
+          innerRef={c => (this.titlebar = c)}
         >
-          <Toolbar height='36' horizontalAlignment='center'>
+          <ToolBar
+            innerRef={c => (this.toolbar = c)}
+          >
             <SearchInput
               placeholder='Search...'
               value={this.state.search}
               onChange={this.handleChange}
             />
-            <Button>
+            <Button onClick={this.handleNewButtonClick}>
               <Octicon icon='plus' />
             </Button>
             <Seperator />
             <Button>
               <Octicon icon='settings' />
             </Button>
-          </Toolbar>
-        </BordedTitleBar>
+          </ToolBar>
+        </AttributedTitleBar>
       </Root>
     )
   }
 }
 
 TitleBar.propTypes = {
+}
+
+TitleBar.contextTypes = {
+  router: PropTypes.shape({
+    params: PropTypes.shape({
+      storageName: PropTypes.string,
+      folderName: PropTypes.string
+    })
+  }),
+  store: PropTypes.shape({
+    dispatch: PropTypes.func
+  })
 }
 
 export default TitleBar
